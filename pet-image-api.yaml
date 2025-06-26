@@ -1,0 +1,227 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Pet image API with weighted random image retrieval.
+
+Resources:
+
+  PetImageBucket:
+    Type: AWS::S3::Bucket
+    Properties: {}
+
+  PetImageLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: PetImageLambdaPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:PutObject
+                  - s3:GetObject
+                  - s3:ListBucket
+                  - s3:HeadObject
+                Resource:
+                  - !GetAtt PetImageBucket.Arn
+                  - !Sub ${PetImageBucket.Arn}/*
+              - Effect: Allow
+                Action: logs:*
+                Resource: '*'
+
+  UploadFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: pet-image-upload
+      Runtime: python3.12
+      Handler: index.lambda_handler
+      Role: !GetAtt PetImageLambdaRole.Arn
+      Code:
+        ZipFile: |
+          import json
+          import boto3
+          import base64
+          import uuid
+          import os
+
+          s3 = boto3.client('s3')
+          BUCKET = os.environ['BUCKET_NAME']
+
+          def lambda_handler(event, context):
+            label = event['queryStringParameters'].get('label')
+            weight = event.get('queryStringParameters', {}).get('weight', '1')  #default = 1
+
+            print("EVENT:", json.dumps(event))
+
+            if label not in ['cat', 'dog']:
+                return {'statusCode': 400, 'body': 'Bad Request'}
+
+            if not event.get('body'):
+                return {'statusCode': 400, 'body': 'Bad Request'}
+
+            # Decode image
+            try:
+                body = base64.b64decode(event['body'])
+            except Exception:
+                return {'statusCode': 400, 'body': 'Bad Request'}
+
+            #png jpg webp strict validation
+            if body.startswith(b'\xFF\xD8\xFF'):
+                ext = 'jpg'
+                content_type = 'image/jpeg'
+            elif body.startswith(b'\x89PNG\r\n\x1a\n'):
+                ext = 'png'
+                content_type = 'image/png'
+            elif body.startswith(b'RIFF') and b'WEBP' in body[8:16]:
+                ext = 'webp'
+                content_type = 'image/webp'
+            else:
+                return {'statusCode': 400, 'body': 'Bad Request'}
+
+            # Save to S3
+            filename = f"{label}/{uuid.uuid4()}.{ext}"
+            s3.put_object(
+                Bucket=BUCKET,
+                Key=filename,
+                Body=body,
+                ContentType=content_type,
+                Metadata={
+                    'weight': str(weight)})
+
+            return {
+                'statusCode': 200,
+                'body': json.dumps({
+                    'message': 'Upload successful',
+                    'file': filename,
+                    'weight': weight})
+            }
+      Environment:
+        Variables:
+          BUCKET_NAME: !Ref PetImageBucket
+
+  GetFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: pet-image-get
+      Runtime: python3.12
+      Handler: index.lambda_handler
+      Role: !GetAtt PetImageLambdaRole.Arn
+      Code:
+        ZipFile: |
+          import json
+          import boto3
+          import random
+          import base64
+          import os
+
+          s3 = boto3.client('s3')
+          BUCKET = os.environ['BUCKET_NAME']
+
+          def lambda_handler(event, context):
+            print("Event:", event)
+            if event['queryStringParameters'] is None:
+                return {'statusCode': 400, 'body': 'Bad Request'}
+            label = event['queryStringParameters'].get('label')
+            if label not in ['cat', 'dog']:
+                return {'statusCode': 400, 'body': 'Bad Request'}
+            
+            result = s3.list_objects_v2(Bucket=BUCKET, Prefix=f"{label}/")
+            if 'Contents' not in result or len(result['Contents']) == 1:
+                return {'statusCode': 404, 'body': 'Not Found'}
+
+            #objects = result['Contents'][1:] #removes just the folder dir
+            objects = result['Contents']
+
+            #get weights
+            weights = []
+            for obj in objects:
+                key = obj['Key']
+                head = s3.head_object(Bucket=BUCKET, Key=key)
+                weight = int(head['Metadata'].get('weight', '1'))
+                weights.append(weight)
+            objs = [obj['Key'] for obj in objects]
+            print('images:',objs)
+            # Pick key with weighted random
+            chosen_key = random.choices([obj['Key'] for obj in objects], weights=weights, k=1)[0]
+
+            file_obj = s3.get_object(Bucket=BUCKET, Key=chosen_key)
+            image_bytes = file_obj['Body'].read()
+            content_type = file_obj.get('ContentType', 'application/octet-stream')
+            print("Selected key:", chosen_key)
+            print("Image size (bytes):", len(image_bytes))
+            
+            return {
+                'statusCode': 200,
+                'headers': {'Content-Type': content_type},
+                'body': base64.b64encode(image_bytes).decode('utf-8'),
+                'isBase64Encoded': True
+            }
+
+      Environment:
+        Variables:
+          BUCKET_NAME: !Ref PetImageBucket
+
+  PetImageApi:
+    Type: AWS::ApiGateway::RestApi
+    Properties:
+      Name: pet-image-api
+
+  UploadResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      ParentId: !GetAtt PetImageApi.RootResourceId
+      PathPart: upload
+      RestApiId: !Ref PetImageApi
+
+  GetResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      ParentId: !GetAtt PetImageApi.RootResourceId
+      PathPart: random
+      RestApiId: !Ref PetImageApi
+
+  UploadMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      HttpMethod: POST
+      ResourceId: !Ref UploadResource
+      RestApiId: !Ref PetImageApi
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${UploadFunction.Arn}/invocations
+
+  GetMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      HttpMethod: GET
+      ResourceId: !Ref GetResource
+      RestApiId: !Ref PetImageApi
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${GetFunction.Arn}/invocations
+
+  UploadPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref UploadFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${PetImageApi}/*/POST/upload
+
+  GetPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref GetFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${PetImageApi}/*/GET/random
