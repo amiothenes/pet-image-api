@@ -27,7 +27,7 @@ This project implements a fully serverless pet image API using AWS services (Lam
 - Get random: `GET https://YOUR_API_ID.execute-api.us-east-2.amazonaws.com/dev/random?label=cat --output "C:\..."`
 
 This would be used with a front-end app that would use the API and from it's headers discern what is the extension of the image, since output can be of various types.
-Image binary limit size of 6MB due to API Gateway and Lambda.
+Image binary limit size of 6MB due to API Gateway and Lambda. Testing with `curl -X`.
 ## Cost Estimation
 Costs retrieved from Amazon's respective AWS pricing:
 - [S3 Pricing](https://aws.amazon.com/s3/pricing/)
