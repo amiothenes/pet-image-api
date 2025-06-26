@@ -1,0 +1,48 @@
+import json
+import boto3
+import random
+import base64
+import os
+
+s3 = boto3.client('s3')
+BUCKET = os.environ['BUCKET_NAME']
+
+def lambda_handler(event, context):
+    print("Event:", event)
+    if event['queryStringParameters'] is None:
+        return {'statusCode': 400, 'body': 'Bad Request'}
+    label = event['queryStringParameters'].get('label')
+    if label not in ['cat', 'dog']:
+        return {'statusCode': 400, 'body': 'Bad Request'}
+    
+    result = s3.list_objects_v2(Bucket=BUCKET, Prefix=f"{label}/")
+    if 'Contents' not in result or len(result['Contents']) == 1:
+        return {'statusCode': 404, 'body': 'Not Found'}
+
+    #objects = result['Contents'][1:] #removes just the folder dir
+    objects = result['Contents']
+
+    #get weights
+    weights = []
+    for obj in objects:
+        key = obj['Key']
+        head = s3.head_object(Bucket=BUCKET, Key=key)
+        weight = int(head['Metadata'].get('weight', '1'))
+        weights.append(weight)
+    objs = [obj['Key'] for obj in objects]
+    print('images:',objs)
+    # Pick key with weighted random
+    chosen_key = random.choices([obj['Key'] for obj in objects], weights=weights, k=1)[0]
+
+    file_obj = s3.get_object(Bucket=BUCKET, Key=chosen_key)
+    image_bytes = file_obj['Body'].read()
+    content_type = file_obj.get('ContentType', 'application/octet-stream')
+    print("Selected key:", chosen_key)
+    print("Image size (bytes):", len(image_bytes))
+    
+    return {
+        'statusCode': 200,
+        'headers': {'Content-Type': content_type},
+        'body': base64.b64encode(image_bytes).decode('utf-8'),
+        'isBase64Encoded': True
+    }
