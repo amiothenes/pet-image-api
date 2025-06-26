@@ -57,6 +57,7 @@ where the memory is 0.125 GB
 * 5000 × 100 ms = 500,000 ms total = 500 seconds total
 * GB-seconds = 500 × 0.125 = 62.5 GB-s
 * 62.5 × 0.0000166667 ≈ $0.00 and it's the same even with x5
+
 | Service         | Calculation                                                        | Est. Cost  |
 | --------------- | ------------------------------------------------------------------ | ---------- |
 | **S3**          | 1.5 GB × \$0.023/GB                                                | \$0.035    |
