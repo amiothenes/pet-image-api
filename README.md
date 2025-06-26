@@ -75,6 +75,15 @@ where the memory is 0.125 GB
 
 Even at 10,000 users, this serverless architecture is very cheap — under \$0/month. But this only assumes low levels of activity per user. More active usage averages could multiply the costs. That case would still be very cost efficient for a severless solution.
 
+
+## Challenges Faced
+- Passing base64-encoded images through API Gateway is tricky
+- Had to set up API Gateway binary media types correctly but also had to understand the logs which I had many errors along the way
+- Lambda needed to handle base64 decode and image magic headers
+- Tested for every edge case (empty bucket, 400s codes etc)
+- Storing weight in S3 metadata is simple but not super scalable if you later store millions of images
+- Could move metadata to somewhere else like parameters hub or another database
+
 Scalability: the system scales linearly:
 * **API calls** scale with usage
 * **Lambda cost** scales with number of requests × memory × time
